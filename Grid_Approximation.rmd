@@ -11,7 +11,7 @@ library(tidyr)
 library(zoo)
 ```
 
-###Grid approximation, good for estimating infinite number of values of theta we can form a grid to derive a posterior, try an example on the NFL
+###Grid approximation
 ```{r}
 ###Pick season and load data
 seasons <- 2015:2020
@@ -74,7 +74,7 @@ posterior_graphing <- posterior %>%
   as.data.frame() %>%
   rename("posterior" = ".")
 
-###Vizual
+###Viz
 return(
 cbind(p_grid_graphing, posterior_graphing)  %>%
   ggplot(aes(x=p_grid, y=posterior)) +
