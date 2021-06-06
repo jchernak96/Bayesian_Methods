@@ -1,1 +1,1 @@
-This is a short guide on Bayesian grid approximation and how to use it to estimate a quarterback completion percentage. 
+This is a short guide on Bayesian methods to evaluate the NFL. I will be adding new R guides in the coming week so stay tuned!
