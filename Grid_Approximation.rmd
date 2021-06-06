@@ -106,3 +106,97 @@ Grid_Approximation_Function("J.Stidham") %>%
        dpi = 300, type = "cairo", width = 10, height = 7, units = "in")
 
 ```
+
+###Loop to compare quarterbacks
+```{r}
+####Function to use grid approximation for player of choice and mean of choice (I am using 2020 league average CP)
+Grid_Approximation_Compare_Function <- function(QB_name){
+
+###Get QB attempts
+QB_Attempts <- pbp %>%
+  filter(passer_player_name == QB_name) %>%
+  filter(sack == 0) %>%
+  select(desc, complete_pass, incomplete_pass) %>%
+  nrow()
+
+###Get QB completions
+QB_Completions <- pbp %>%
+  filter(passer_player_name == QB_name) %>%
+  filter(sack == 0) %>%
+  select(desc, complete_pass, incomplete_pass) %>%
+  summarise(complete = sum(complete_pass)) 
+
+###Create a grid of possible values for completion percentage
+p_grid <- seq(from = 0, to = 1, length.out = 200)
+
+###create a flat prior to start
+prior <- rep(1,200)
+
+###Compute likelihood
+likelihood <- dbinom(QB_Completions$complete[[1]], size = QB_Attempts, prob = p_grid)
+
+###Compute product
+unstd.posterior <- likelihood * prior
+
+###standardize the posterior to sum to 1
+posterior <- unstd.posterior / sum(unstd.posterior)
+
+###Convert grid into data frame for usage in GGPLOT
+p_grid_graphing <- p_grid %>%
+  as.data.frame() %>%
+  rename("p_grid" = ".")
+
+###Convert posterior into data frame for usage in GGPLOT
+posterior_graphing <- posterior %>%
+  as.data.frame() %>%
+  rename("posterior" = ".")
+
+###Bind our data and label our QB
+return(
+QB_CP_Data  <- cbind(p_grid_graphing, posterior_graphing)
+)
+
+}
+
+###Blank data frame for merging
+QB_CP_Database <- data.frame()
+
+###List of QBS you are interested in 
+QBs_Of_Interest <- list("J.Stidham",
+                        "C.Newton",
+                        "B.Hoyer")
+
+###Loop to get values
+for (x in 1:length(QBs_Of_Interest)) {
+  QB_Data <- Grid_Approximation_Compare_Function(QBs_Of_Interest[x]) %>%
+    mutate(QB = QBs_Of_Interest[[x]])
+  QB_CP_Database <- rbind(QB_CP_Database, QB_Data)
+}
+
+###Viz
+QB_CP_Database %>%
+  ggplot(aes(x=p_grid, y=posterior, group = QB)) +
+  theme_light()+
+  theme(plot.title = element_text(color="black", size=8, face="bold"))+
+  coord_cartesian(clip = "off") +
+  theme(plot.title = element_text(size = 10, face = "bold"),
+  plot.subtitle = element_text(size = 8))+
+  theme(plot.background = element_rect(fill = "gray97"))+
+  theme(panel.background = element_rect(fill = "gray97"))+
+  geom_line(aes(linetype = QB, color = QB)) +
+  geom_vline(xintercept = 0.6124461, linetype = "dashed", color = "dark red") +
+  coord_cartesian(clip = "off") +
+  theme(plot.title = element_text(size = 10, face = "bold"),
+  plot.subtitle = element_text(size = 8))+
+  labs(title = paste0( " Bayesian Grid Approximation of Completion Percentage"),
+       caption = "Plot: PatriotsStatsR, Data: NFLFastR")+
+    ylab("Posterior Probability")+
+  xlab("Completion Percentage") +
+  scale_y_continuous(labels = percent_format(accuracy = 1)) +
+  scale_x_continuous(labels = percent_format(accuracy = 1), breaks = seq(0,1,.05)) +
+  ggsave(filename = "QB_All.png", 
+       dpi = 300, type = "cairo", width = 10, height = 7, units = "in")
+  
+
+
+
