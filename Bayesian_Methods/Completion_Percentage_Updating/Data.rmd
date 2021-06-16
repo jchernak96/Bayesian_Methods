@@ -1,0 +1,109 @@
+###Packages
+```{r}
+library(cfbfastR)
+library(dplyr)
+library(ffscrapr)
+library(tidyverse)
+library(tidyr)
+```
+
+###Loop through PBP data to all QB related plays
+```{r}
+pbp <- data.frame() #blank frame
+
+#Loop
+for (x in 2014:2020) {
+  progressr::with_progress({
+  future::plan("multisession")
+  qb_perf <- cfbfastR::load_cfb_pbp(x)
+  qb_perf <- qb_perf %>%
+  filter(pass == 1) %>%
+  dplyr::select(passer_player_name,
+         year,
+         week,
+         pos_team,
+         def_pos_team,
+         EPA, 
+         pass,
+         game_id,
+         id_play,
+         game_play_number, 
+         completion,
+         pass_attempt)
+  pbp <- rbind(pbp, qb_perf)
+  
+  })
+}
+
+#Merge in game dates and times
+dates <- read.csv("Game_Dates.csv")
+  
+pbp <-  merge(pbp, dates, by = "game_id") %>%
+  rename("name" = "passer_player_name")
+```
+
+###Recruiting stars for each QB, using loop to get data frame of all QBs
+```{r}
+qb_ratings <- data.frame() #blank data frame for merging
+
+for (x in 2000:2020) {
+  PRO  <- cfbd_recruiting_player(x, position = "PRO")
+  DUAL <- cfbd_recruiting_player(x, position = "DUAL")
+  qb_ratings <- rbind(qb_ratings, PRO, DUAL)
+}
+
+###check our results
+qb_ratings %>%
+  filter(year == 2020) %>%
+  arrange(name)
+
+###looks like some duplicates so remove those
+qb_ratings <- qb_ratings %>%
+  distinct(name, year, .keep_all = TRUE) %>%
+  rename("class" = "year")
+```
+
+###Clean names for later merging
+```{r}
+qb_ratings$name <- dp_cleannames(qb_ratings$name)
+pbp$name        <- dp_cleannames(pbp$name)
+```
+
+###Merge names
+```{r}
+#merge data
+df_final <- merge(pbp, qb_ratings, by = c("name"))
+
+#check results, passes smell test for now
+df_final %>%
+  filter(name == "Bo Nix") %>%
+  arrange(year , week) 
+
+###save file
+df_final %>%
+  rename("Season" = "year") %>%
+  select(-recruit_type,
+         -school,
+         -committed_to,
+         -position,
+         -height,
+         -weight,
+         -city,
+         -state_province,
+         -country,
+         -hometown_info_latitude,
+         -hometown_info_longitude,
+         -hometown_info_fips_code) %>%
+  write_rds(file = "CFB_QB_Data.rds")
+```
+
+
+
+
+
+
+
+
+
+
+
