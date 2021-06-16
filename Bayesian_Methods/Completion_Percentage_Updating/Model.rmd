@@ -1,0 +1,223 @@
+###Packages
+```{r}
+library(cfbfastR)
+library(dplyr)
+library(ffscrapr)
+library(tidyverse)
+library(hrbrthemes)
+library(rethinking)
+library(viridis)
+library(viridisLite)
+library(brms)
+library(zoo)
+library(nflfastR)
+library(Lahman)
+library(stats4)
+library(VGAM)
+library(gamlss)
+library(broom)
+```
+
+###Load in data and clean 
+```{r}
+#load data and remove NA values
+QB_Data <- readRDS("CFB_QB_Data.rds") %>%
+  filter(is.na(EPA)    == FALSE) %>%
+  filter(is.na(stars)  == FALSE) %>%
+  filter(is.na(rating) == FALSE) %>%
+  filter(pass_attempt  == 1)
+
+#make stars a factor variable
+QB_Data$stars <- as.factor(QB_Data$stars)
+
+#round rating
+QB_Data$rating <- round(QB_Data$rating, digits = 2)
+
+QB_Data$start_date <- as.Date(QB_Data$start_date , format = "%m/%d/%Y")
+```
+
+###Explore what predicts a QB's career best, stars, composite, rating
+```{r}
+#Stars
+QB_Data %>%
+  group_by(stars, name) %>%
+  summarize(mean_cp = mean(completion, na.rm = TRUE),
+            std_cp  = sd(completion, na.rm = TRUE),
+            throws  = n()) %>%
+  filter(throws > 50) %>%
+  ungroup() %>%
+  group_by(stars) %>%
+  summarize(mean_cp = mean(mean_cp, na.rm = TRUE),
+            std_cp  = sd(std_cp, na.rm = TRUE))
+
+#Composite
+QB_Data %>%
+  group_by(rating, name) %>%
+  summarize(mean_cp = mean(completion, na.rm = TRUE),
+            std_cp  = sd(completion, na.rm = TRUE),
+            throws  = n()) %>%
+  filter(throws > 50) %>%
+  ungroup() %>%
+  group_by(rating) %>%
+  summarize(mean_cp = mean(mean_cp, na.rm = TRUE),
+            std_cp  = sd(std_cp, na.rm = TRUE))
+
+#Ranking
+QB_Data %>%
+  group_by(ranking, name) %>%
+  summarize(mean_cp = mean(completion, na.rm = TRUE),
+            std_cp  = sd(completion, na.rm = TRUE),
+            throws  = n()) %>%
+  filter(throws > 50) %>%
+  ungroup() %>%
+  group_by(ranking) %>%
+  summarize(mean_cp = mean(mean_cp, na.rm = TRUE),
+            std_cp  = sd(std_cp, na.rm = TRUE))
+```
+
+###I chose to use the composite rating because it adds a little more specificity than just a factor level star rating. We can viz it here with a smoothing spline
+```{r}
+QB_Data %>%
+  group_by(rating, name) %>%
+  summarize(mean_cp = mean(completion, na.rm = TRUE),
+            std_cp  = sd(completion, na.rm = TRUE),
+            throws  = n()) %>%
+  filter(throws > 50)  %>%
+  ggplot(aes(x=rating, y=mean_cp)) +
+  geom_point() +
+  geom_smooth()
+```
+
+###I will use a beta prior. Two things we need to account for in our model. 1.)The relationship between completions and throw attempts. A player who performs poorly will get less chances and a player who performs well will get more chances & 2.) Experience of a QB, if a QB is a 4th or 5th year starter our prior should shift to a higher expectation while a freshman should have a lower expectation
+```{r}
+##visualize relationship 1. just mentioned with a log scale, as the number of throws increases so generally does the completion percentage. So we need to account for this
+QB_Data %>%
+  group_by(id, name) %>%
+  summarize(throws = n(),
+            cp = sum(completion) / sum(pass_attempt)) %>%
+  ggplot(aes(x = throws, y = cp)) +
+  geom_point() +
+  geom_hline(yintercept = 0.5524417) +
+  geom_smooth(method = "lm") +
+  scale_x_continuous(trans='log2')
+
+##visualize relationship 2 just mentioned, no need for log scale (instead will use second degree polynomial but we can see that freshman should have a different prior than other QBs and so on. A bit of a plateau once a QB reaches year 3. 
+QB_Data %>%
+  mutate(Years_Since_Entry = ifelse(Season   == class, 0, 
+                             ifelse(Season == class+1, 1,
+                             ifelse(Season == class+2, 2,
+                             ifelse(Season == class+3, 3,
+                             ifelse(Season == class+4, 4, 5)))))) %>%
+  dplyr::select(season, class, Years_Since_Entry, completion, pass_attempt, rating, id) %>%
+  group_by(Years_Since_Entry) %>%
+  summarize(cp = mean(completion),
+            ex = n()) %>%
+  arrange(desc(Years_Since_Entry)) %>%
+  ggplot(aes(x=Years_Since_Entry, y = cp)) +
+  geom_point() +
+  stat_spline(nknots = 6) + #check different spline values, all seem very similar
+  stat_spline(nknots = 5) +
+  stat_spline(nknots = 4)
+```
+
+###Fit model and account for those biases
+```{R}
+##Data to fit
+QB_Grouped <- QB_Data %>%
+  mutate(Years_Since_Entry = ifelse(Season   == class, 0, 
+                             ifelse(Season == class+1, 1,
+                             ifelse(Season == class+2, 2,
+                             ifelse(Season == class+3, 3,
+                             ifelse(Season == class+4, 4, 5)))))) %>%
+  group_by(id, name, rating, Years_Since_Entry) %>%
+  summarize(throws      = n(),
+            cp          = sum(completion) / sum(pass_attempt),
+            completions = sum(completion),
+            attempts    = sum(pass_attempt)) %>%
+  ungroup()
+
+##fit gam lss
+fit <- gamlss(cbind(completions, attempts - completions) ~ 0 + log(attempts) + rating + ns(Years_Since_Entry, df = 4),
+              data = QB_Grouped,
+              family = BB(mu.link = "identity"))
+
+tidy(fit)
+
+#fit model to data
+mu    <- fitted(fit, parameter = "mu")
+sigma <- fitted(fit, parameter = "sigma")
+
+career_eb_wCP <- QB_Grouped %>%
+  dplyr::select(name, id, completions, attempts, rating, Years_Since_Entry) %>%
+  mutate(mu = mu,
+         alpha0 = mu / sigma,
+         beta0 = (1 - mu) / sigma,
+         alpha1 = alpha0 + completions,
+         beta1 = beta0 + attempts - completions,
+         new_eb = alpha1 / (alpha1 + beta1),
+         low = qbeta(.025, alpha1, beta1),
+                high = qbeta(.975, alpha1, beta1)) 
+```
+
+#Function to plot player of interest
+```{r}
+
+QB_Graphing_Function <- function(QB_Name, color_code) {
+a <- QB_Data %>%
+  mutate(Years_Since_Entry = ifelse(Season   == class, 0, 
+                             ifelse(Season == class+1, 1,
+                             ifelse(Season == class+2, 2,
+                             ifelse(Season == class+3, 3,
+                             ifelse(Season == class+4, 4, 5)))))) %>%
+  filter(name == QB_Name) %>%
+  arrange(start_date, game_play_number) %>%
+  within(acc_sum_cp <- cumsum(completion)) %>%
+  within(acc_sum_at <- cumsum(pass_attempt))
+
+
+b <- career_eb_wCP %>%
+  arrange(desc(new_eb)) %>%
+  filter(  name == QB_Name  ) %>%
+  dplyr::select(-new_eb,
+         -low,
+         -high)
+
+return(merge(a,b, by = c("name", "id", "Years_Since_Entry")) %>%
+  mutate(alpha1 = alpha0 + acc_sum_cp,
+         beta1 = beta0 + acc_sum_at - acc_sum_cp,
+         new_eb = alpha1 / (alpha1 + beta1),
+         low = qbeta(.025, alpha1, beta1),
+                high = qbeta(.975, alpha1, beta1))%>%
+  ggplot(aes(x=acc_sum_at, y=new_eb)) +
+  geom_line(color = color_code)+
+  geom_ribbon(aes(ymin=low, ymax=high), linetype=2, alpha=0.1, color = "#828A8F") +
+    xlab("Throw Attempt") +
+  ylab("Completion Percentage") +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  theme_light()+
+  theme(plot.title = element_text(color="black", size=8, face="bold"))+
+  theme(plot.title = element_text(size = 10, face = "bold"),
+  plot.subtitle = element_text(size = 8))+
+  theme(plot.background = element_rect(fill = "gray97"))+
+  theme(panel.background = element_rect(fill = "gray97"))+
+  labs(title = "Bayesian Updating of Completion Percentage with Credible Intervals: Recruit Rating, 
+Number of Dropbacks & Years of Experience as Prior",
+       caption = "Plot: PatriotsStatsR, Data: CFBFastR") +
+  geom_hline(yintercept = quantile(quantile(QB_Grouped$cp, .5)), linetype = "dashed") +
+  geom_hline(yintercept = quantile(quantile(QB_Grouped$cp, .75)), linetype = "dashed") +
+  geom_hline(yintercept = quantile(quantile(quantile(QB_Grouped$cp, .9)[1])), linetype = "dashed") +
+  annotate("text", x = 525, y = .74, label = "90th Percentile", size = 3) +
+  annotate("text", x = 525, y = .63, label = "75th Percentile" , size = 3) +
+  annotate("text", x = 525, y = .57, label = "50th Percentile", size = 3))
+    ggsave(filename = paste0("Mac_Updating_wCP",".png"), 
+       dpi = 300, type = "cairo", width = 10, height = 7, units = "in")
+}
+
+#insert QB name and the color of the line desired
+QB_Graphing_Function("Kellen Mond", "#9E1B32")
+```
+
+
+
+
+
